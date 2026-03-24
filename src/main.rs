@@ -9,15 +9,17 @@
 //   3. ハードコードされたデフォルト値
 //
 // CLIオプション:
-//   --config   <path>  設定ファイルのパス     (default: tsuki_optimize.toml)
-//   --corpus   <path>  コーパスファイルパス   (toml: run.corpus)
-//   --seed     <n>     乱数シード             (toml: run.seed)
-//   --iter     <n>     最大イテレーション数   (toml: run.max_iter)
-//   --restart  <n>     再起動閾値             (toml: run.restart_after)
-//   --max-restarts <n> 最大再起動回数         (toml: run.max_restarts)
-//   --inter-sample <n> 層間サンプリング数     (toml: run.inter_sample)
-//   --stroke-scale <f> 打鍵数スケール         (toml: weights.stroke_scale)
-//   --log-interval <n> ログ間隔               (toml: run.log_interval)
+//   --config        <path>  設定ファイルのパス       (default: tsuki_optimize.toml)
+//   --corpus        <path>  コーパスファイルパス     (toml: run.corpus)
+//   --seed          <n>     乱数シード               (toml: run.seed)
+//   --iter          <n>     最大イテレーション数     (toml: run.max_iter)
+//   --restart       <n>     再起動閾値               (toml: run.restart_after)
+//   --max-restarts  <n>     最大再起動回数           (toml: run.max_restarts)
+//   --inter-sample  <n>     層間サンプリング数       (toml: run.inter_sample)
+//   --stroke-scale  <f>     打鍵数スケール           (toml: weights.stroke_scale)
+//   --log-interval  <n>     ログ間隔                 (toml: run.log_interval)
+//   --keyboard-size <s>     キーボードサイズ         (toml: run.keyboard_size)
+//                           "3x10"（デフォルト）または "3x11"
 
 mod chars;
 mod config;
@@ -34,7 +36,7 @@ use rand::rngs::SmallRng;
 use signal_hook::consts::{SIGINT, SIGUSR1};
 use signal_hook::flag;
 
-use config::Config;
+use config::{Config, keyboard_size_str};
 use corpus::Corpus;
 use cost::{score, score_breakdown};
 
@@ -62,9 +64,24 @@ fn main() {
         Config::default()
     };
 
-    // ── CLIオプションでTOML値を上書き ────────────
+    // ── キーボードサイズ決定（CLI > TOML > デフォルト）──
+    // CLIの --keyboard-size が TOML の run.keyboard_size を上書きする
+    let kp = if let Some(ks) = cli.get("--keyboard-size") {
+        match ks.as_str() {
+            "3x11" => layout::KeyboardParams::k3x11(),
+            "3x10" => layout::KeyboardParams::k3x10(),
+            other  => {
+                eprintln!("警告: 不明な --keyboard-size '{}' → 3x10 を使用します", other);
+                layout::KeyboardParams::k3x10()
+            }
+        }
+    } else {
+        toml_config.build_keyboard_params()
+    };
+
+    // ── 設定ビルド ───────────────────────────────
     let mut search_config = toml_config.build_search_config();
-    let mut weights       = toml_config.build_weights();
+    let mut weights       = toml_config.build_weights(kp);
 
     if let Some(v) = cli.get("--iter")         { search_config.max_iter        = v.parse().unwrap_or(search_config.max_iter); }
     if let Some(v) = cli.get("--restart")      { search_config.restart_after   = v.parse().unwrap_or(search_config.restart_after); }
@@ -92,6 +109,7 @@ fn main() {
     eprintln!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!(" tsuki_optimize 実行設定");
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!(" keyboard_size = {}", keyboard_size_str(&kp));
     eprintln!(" corpus        = {}", corpus_path);
     eprintln!(" seed          = {}", seed);
     eprintln!(" max_iter      = {}", search_config.max_iter);
@@ -112,27 +130,24 @@ fn main() {
         weights.alternation_bonus, weights.outroll_bonus,
         weights.inroll_bonus, weights.quasi_alt_bonus);
     eprintln!(" slot_difficulty:");
+    let nc = kp.num_cols as usize;
     for (r, row) in weights.slot_difficulty.iter().enumerate() {
         let label = ["  上段(row0)", "  中段(row1)", "  下段(row2)"][r];
-        eprintln!("{} {:?}", label, row);
+        eprintln!("{} {:?}", label, &row[..nc]);
     }
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // ── 初期解生成 ───────────────────────────────
-    let initial_layout = search::build_initial_layout(&corpus);
+    let initial_layout = search::build_initial_layout(&corpus, kp);
     eprintln!("【初期解】");
     initial_layout.display();
+    let initial_score = score(&initial_layout, &corpus, &weights);
     score_breakdown(&initial_layout, &corpus, &weights);
 
     // ── シグナルハンドラ登録 ─────────────────────
-    // SIGINT (Ctrl+C): 探索を止めてベストを出力して終了
-    // SIGUSR1 (kill -USR1 <pid>): 現在のベストを出力して探索は継続
-    // SIGINT  → 探索を止めてベストを出力して終了
     let stop_flag = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&stop_flag))
         .expect("SIGINTハンドラの登録に失敗しました");
-    // SIGUSR1 → 現在のベストをログに出力して探索は継続
-    //           使い方: kill -USR1 $(pgrep tsuki_optimize)
     let report_flag = Arc::new(AtomicBool::new(false));
     flag::register(SIGUSR1, Arc::clone(&report_flag))
         .expect("SIGUSR1ハンドラの登録に失敗しました");
@@ -146,13 +161,12 @@ fn main() {
     best_layout.display();
     score_breakdown(&best_layout, &corpus, &weights);
 
-    let score_init = score(&search::build_initial_layout(&corpus), &corpus, &weights);
     let score_best = score(&best_layout, &corpus, &weights);
-    println!("\n初期スコア : {:.4}", score_init);
+    println!("\n初期スコア : {:.4}", initial_score);
     println!("最良スコア : {:.4}", score_best);
     println!("改善幅     : {:.4}  ({:.2}%)",
-        score_init - score_best,
-        (score_init - score_best) / score_init.abs() * 100.0);
+        initial_score - score_best,
+        (initial_score - score_best) / initial_score.abs() * 100.0);
 }
 
 fn parse_cli(args: &[String]) -> std::collections::HashMap<String, String> {

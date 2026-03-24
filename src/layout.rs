@@ -1,52 +1,125 @@
 // layout.rs — 月配列改変版のレイアウト定義
 
-use crate::chars::{CharId, NUM_CHARS, TOUTEN_ID, KUTEN_ID, DAKUTEN_ID, HANDAKUTEN_ID};
+use crate::chars::{
+    CharId, MAX_CHARS, TOUTEN_ID, KUTEN_ID, DAKUTEN_ID, HANDAKUTEN_ID,
+};
 
 pub type SlotId = u8;
-pub const NUM_SLOTS: usize = 60;
 
-/// Layer 1 上のDキースロット（row1, col2 → 、固定）
+/// スロット配列の上限サイズ（3x11: 66スロット）
+pub const MAX_SLOTS: usize = 66;
+
+/// シフトキースロットのセンチネル値（slot_to_char でシフトキー位置に使用）
+pub const SHIFT_SLOT_SENTINEL: CharId = u8::MAX;
+
+/// Layer 1 上のDキースロット（3x10: row1, col2 → 、固定）
 pub const D_SLOT: SlotId = 12;
-/// Layer 1 上のKキースロット（row1, col7 → 。固定）
+/// Layer 1 上のKキースロット（3x10: row1, col7 → 。固定）
 pub const K_SLOT: SlotId = 17;
+
+// ──────────────────────────────────────────────────────────────
+// キーボードサイズ設定
+// ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardSize { K3x10, K3x11 }
+
+/// レイアウト計算に必要なキーボード形状パラメータ
+///
+/// `Copy` なので値渡しで使用する。
+#[derive(Clone, Copy, Debug)]
+pub struct KeyboardParams {
+    pub size: KeyboardSize,
+    /// 列数（10 または 11）
+    pub num_cols: u8,
+    /// 1レイヤーのスロット数（30 または 33）
+    pub num_slots_per_layer: u8,
+    /// 全スロット数（60 または 66）
+    pub num_slots: usize,
+    /// 最適化対象の文字数（60 または 64）
+    pub num_chars: usize,
+    /// 左手シフトキーのスロット（L2右手文字を打つ際に押す）
+    /// 3x10: D_SLOT=12（左中指）、3x11: ☆=13（row1,col2）
+    pub shift_left: SlotId,
+    /// 右手シフトキーのスロット（L2左手文字を打つ際に押す）
+    /// 3x10: K_SLOT=17（右中指）、3x11: ★=18（row1,col7）
+    pub shift_right: SlotId,
+}
+
+impl KeyboardParams {
+    /// 3x10キーボード（デフォルト）
+    pub fn k3x10() -> Self {
+        KeyboardParams {
+            size: KeyboardSize::K3x10,
+            num_cols: 10,
+            num_slots_per_layer: 30,
+            num_slots: 60,
+            num_chars: 60,
+            shift_left:  D_SLOT,  // 12
+            shift_right: K_SLOT,  // 17
+        }
+    }
+
+    /// 3x11キーボード（右端に1列追加、☆★は同位置で固定専用シフトキー）
+    ///
+    /// ☆: row1, col2 → slot = 1*11+2 = 13
+    /// ★: row1, col7 → slot = 1*11+7 = 18
+    pub fn k3x11() -> Self {
+        KeyboardParams {
+            size: KeyboardSize::K3x11,
+            num_cols: 11,
+            num_slots_per_layer: 33,
+            num_slots: 66,
+            num_chars: 64,
+            shift_left:  13,  // ☆ (row1, col2)
+            shift_right: 18,  // ★ (row1, col7)
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// スロット計算ユーティリティ
+// ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hand { Left, Right }
 
-/// スロット番号からカラム（0-9）を得る
-/// L1: slot % 10, L2: (slot-30) % 10 = slot % 10 でも同じ
+/// スロット番号からカラム（0 〜 num_cols-1）を得る
 #[inline]
-pub fn slot_col(s: SlotId) -> u8 { s % 10 }
+pub fn slot_col(s: SlotId, num_cols: u8) -> u8 { s % num_cols }
 
 /// スロット番号からロウ（0=上段, 1=中段, 2=下段）を得る
 #[inline]
-pub fn slot_row(s: SlotId) -> u8 { (s % 30) / 10 }
+pub fn slot_row(s: SlotId, num_cols: u8) -> u8 {
+    (s % (num_cols * 3)) / num_cols
+}
 
 /// カラムから指番号を得る（0=左小指 … 7=右小指）
+/// 3x10 の col 0-9 と 3x11 の col 0-10 の両方に対応
 #[inline]
 pub fn col_to_finger(col: u8) -> u8 {
     match col {
-        0 => 0,        // 左小指
-        1 => 1,        // 左薬指
-        2 => 2,        // 左中指 (Dキー)
-        3 | 4 => 3,    // 左人差し指
-        5 | 6 => 4,    // 右人差し指
-        7 => 5,        // 右中指 (Kキー)
-        8 => 6,        // 右薬指
-        9 => 7,        // 右小指
-        _ => unreachable!(),
+        0       => 0,  // 左小指
+        1       => 1,  // 左薬指
+        2       => 2,  // 左中指（☆/Dキー）
+        3 | 4   => 3,  // 左人差し指
+        5 | 6   => 4,  // 右人差し指
+        7       => 5,  // 右中指（★/Kキー）
+        8       => 6,  // 右薬指
+        9 | 10  => 7,  // 右小指（col10 は3x11の追加列）
+        _       => unreachable!(),
     }
 }
 
 /// スロットの手（左/右）
 #[inline]
-pub fn slot_hand(s: SlotId) -> Hand {
-    if slot_col(s) < 5 { Hand::Left } else { Hand::Right }
+pub fn slot_hand(s: SlotId, num_cols: u8) -> Hand {
+    if slot_col(s, num_cols) < 5 { Hand::Left } else { Hand::Right }
 }
 
-/// ——————————————————————————————
-/// キーストローク（最大2打鍵）の軽量な表現
-/// ——————————————————————————————
+// ──────────────────────────────────────────────────────────────
+// キーストローク（最大2打鍵）の軽量な表現
+// ──────────────────────────────────────────────────────────────
 #[derive(Clone, Copy, Debug)]
 pub struct Keystrokes {
     data: [SlotId; 2],
@@ -66,27 +139,69 @@ impl Keystrokes {
     pub fn last(&self) -> SlotId { self.data[self.len as usize - 1] }
 }
 
-/// ——————————————————————————————
-/// レイアウト本体
-/// ——————————————————————————————
+/// スロット番号からキーストロークを計算
+#[inline]
+pub fn keystrokes_for_slot(slot: SlotId, kp: KeyboardParams) -> Keystrokes {
+    if (slot as usize) < kp.num_slots_per_layer as usize {
+        // Layer 1: そのスロットを1打鍵するだけ
+        Keystrokes::one(slot)
+    } else {
+        // Layer 2: 物理キー番号 = slot - num_slots_per_layer
+        let physical = slot - kp.num_slots_per_layer;
+        let col = slot_col(physical, kp.num_cols);
+        // 左手キー → 右シフト（★）、右手キー → 左シフト（☆）
+        let shift = if col < 5 { kp.shift_right } else { kp.shift_left };
+        Keystrokes::two(shift, physical)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// レイアウト本体
+// ──────────────────────────────────────────────────────────────
 #[derive(Clone)]
 pub struct Layout {
-    /// char_to_slot[c] = スロット番号（0..59）
-    pub char_to_slot: [SlotId; NUM_CHARS],
+    pub kp: KeyboardParams,
+    /// char_to_slot[c] = スロット番号
+    pub char_to_slot: [SlotId; MAX_CHARS],
     /// slot_to_char[s] = その位置の文字ID
-    pub slot_to_char: [CharId; NUM_SLOTS],
+    /// シフトキースロット（3x11では13,18）は SHIFT_SLOT_SENTINEL
+    pub slot_to_char: [CharId; MAX_SLOTS],
 }
 
 impl Layout {
-    /// 初期配置：CharId i → SlotId i（画像の月配列2-263と一致）
-    pub fn initial() -> Self {
-        let mut cts = [0u8; NUM_CHARS];
-        let mut stc = [0u8; NUM_SLOTS];
-        for i in 0..NUM_CHARS {
-            cts[i] = i as SlotId;
-            stc[i] = i as CharId;
+    /// 初期配置を生成する
+    ///
+    /// 3x10: CharId i → SlotId i（既存の月配列2-263と一致）
+    /// 3x11: CharId 0..63 を、シフトキースロット（13, 18）を除いた
+    ///       スロット 0..65 に順番に割り当てる
+    pub fn initial(kp: KeyboardParams) -> Self {
+        let mut cts = [0u8; MAX_CHARS];
+        let mut stc = [SHIFT_SLOT_SENTINEL; MAX_SLOTS];
+
+        match kp.size {
+            KeyboardSize::K3x10 => {
+                for i in 0..60usize {
+                    cts[i] = i as SlotId;
+                    stc[i] = i as CharId;
+                }
+            }
+            KeyboardSize::K3x11 => {
+                // シフトキースロット（13, 18）をスキップして文字スロットを割り当てる
+                let mut char_id = 0usize;
+                for slot in 0u8..kp.num_slots as u8 {
+                    if slot == kp.shift_left || slot == kp.shift_right {
+                        // stc[slot] は SHIFT_SLOT_SENTINEL のまま
+                        continue;
+                    }
+                    cts[char_id] = slot;
+                    stc[slot as usize] = char_id as CharId;
+                    char_id += 1;
+                    if char_id >= kp.num_chars { break; }
+                }
+            }
         }
-        Layout { char_to_slot: cts, slot_to_char: stc }
+
+        Layout { kp, char_to_slot: cts, slot_to_char: stc }
     }
 
     /// 文字c1とc2のスロットを交換する（制約チェックなし、search層で行う）
@@ -100,22 +215,24 @@ impl Layout {
         self.slot_to_char[s2 as usize] = c1;
     }
 
-    /// c がLayer 1にいるか
+    /// c が Layer 1 にいるか
     #[inline]
     pub fn is_l1(&self, c: CharId) -> bool {
-        self.char_to_slot[c as usize] < 30
+        (self.char_to_slot[c as usize] as usize) < self.kp.num_slots_per_layer as usize
     }
 
-    /// 文字の「主手」：Layer 2なら文字キー側の手（シフトキー側ではない）
+    /// 文字の「主手」（Layer 2なら文字キー側の手）
     #[inline]
     pub fn primary_hand(&self, c: CharId) -> Hand {
-        slot_hand(self.char_to_slot[c as usize])
+        slot_hand(self.char_to_slot[c as usize], self.kp.num_cols)
     }
 
-    /// 実打鍵数（Enterを含む）
+    /// 実打鍵数を返す
+    /// 3x10: 。/、は K/D + Enter で 2打鍵
+    /// 3x11: 。/、は通常文字扱い（L1なら1打鍵、L2なら2打鍵）
     #[inline]
     pub fn char_stroke_count(&self, c: CharId) -> u32 {
-        if c == KUTEN_ID || c == TOUTEN_ID {
+        if self.kp.size == KeyboardSize::K3x10 && (c == KUTEN_ID || c == TOUTEN_ID) {
             2  // K/D + Enter
         } else if self.is_l1(c) {
             1
@@ -127,49 +244,44 @@ impl Layout {
     /// 現在のレイアウトを表示する
     pub fn display(&self) {
         use crate::chars::CHAR_LIST;
+        let nc = self.kp.num_cols as usize;
+        let npl = self.kp.num_slots_per_layer as usize;
+
         println!("【Layer 1】");
         for row in 0u8..3 {
             print!("  ");
-            for col in 0u8..10 {
-                let slot = row * 10 + col;
-                let c = self.slot_to_char[slot as usize];
-                let ch = CHAR_LIST[c as usize];
-                print!("{} ", ch);
+            for col in 0..nc {
+                let slot = (row as usize) * nc + col;
+                // シフトキースロットは ☆/★ を表示
+                if self.kp.size == KeyboardSize::K3x11
+                    && (slot == self.kp.shift_left as usize
+                        || slot == self.kp.shift_right as usize)
+                {
+                    let sym = if slot == self.kp.shift_left as usize { '☆' } else { '★' };
+                    print!("{} ", sym);
+                } else {
+                    let c = self.slot_to_char[slot];
+                    print!("{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
+                }
             }
             println!();
         }
         println!("【Layer 2】");
         for row in 0u8..3 {
             print!("  ");
-            for col in 0u8..10 {
-                let slot = 30 + row * 10 + col;
-                let c = self.slot_to_char[slot as usize];
-                let ch = CHAR_LIST[c as usize];
-                print!("{} ", ch);
+            for col in 0..nc {
+                let slot = npl + (row as usize) * nc + col;
+                let c = self.slot_to_char[slot];
+                print!("{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
             }
             println!();
         }
     }
 }
 
-/// スロット番号からキーストロークを計算（c不要で計算できる汎用版）
-#[inline]
-pub fn keystrokes_for_slot(slot: SlotId) -> Keystrokes {
-    if slot < 30 {
-        // Layer 1: そのスロットを1打鍵するだけ
-        Keystrokes::one(slot)
-    } else {
-        // Layer 2: 物理キー番号 = slot - 30
-        let physical = slot - 30;
-        let col = physical % 10;
-        let shift = if col < 5 { K_SLOT } else { D_SLOT };
-        Keystrokes::two(shift, physical)
-    }
-}
-
-/// ——————————————————————————————
-/// スワップ後のスロットを仮計算（レイアウトを変更せずにデルタ評価用）
-/// ——————————————————————————————
+// ──────────────────────────────────────────────────────────────
+// スワップ後のスロットを仮計算（レイアウトを変更せずにデルタ評価用）
+// ──────────────────────────────────────────────────────────────
 #[inline]
 pub fn slot_after_swap(layout: &Layout, swap_c1: CharId, swap_c2: CharId, c: CharId) -> SlotId {
     if c == swap_c1 {
@@ -181,14 +293,19 @@ pub fn slot_after_swap(layout: &Layout, swap_c1: CharId, swap_c2: CharId, c: Cha
     }
 }
 
-/// ——————————————————————————————
-/// 移動制約チェック関数群（tabu search で使用）
-/// ——————————————————————————————
+// ──────────────────────────────────────────────────────────────
+// 移動制約チェック関数群（tabu search で使用）
+// ──────────────────────────────────────────────────────────────
 
 /// 文字cが固定（動かせない）かどうか
+/// 3x10: 。と、は K/D スロット固定
+/// 3x11: 固定文字なし（☆★はスロットとして管理され、CharIdを持たない）
 #[inline]
-pub fn is_fixed(c: CharId) -> bool {
-    c == TOUTEN_ID || c == KUTEN_ID
+pub fn is_fixed(c: CharId, kp: KeyboardParams) -> bool {
+    match kp.size {
+        KeyboardSize::K3x10 => c == TOUTEN_ID || c == KUTEN_ID,
+        KeyboardSize::K3x11 => false,
+    }
 }
 
 /// 文字cがLayer1専用（Layer2へ移動不可）かどうか
@@ -199,6 +316,6 @@ pub fn is_l1_only(c: CharId) -> bool {
 
 /// 文字cが層間移動可能かどうか
 #[inline]
-pub fn is_inter_layer_movable(c: CharId) -> bool {
-    !is_fixed(c) && !is_l1_only(c)
+pub fn is_inter_layer_movable(c: CharId, kp: KeyboardParams) -> bool {
+    !is_fixed(c, kp) && !is_l1_only(c)
 }
