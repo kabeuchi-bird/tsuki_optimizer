@@ -1,5 +1,7 @@
 // cost.rs — 評価関数とコスト定数
 
+use std::io::Write;
+
 use crate::chars::{CharId, TOUTEN_ID, KUTEN_ID};
 use crate::corpus::Corpus;
 use crate::layout::{
@@ -297,7 +299,7 @@ fn stroke_count_for_slot(c: CharId, slot: SlotId, kp: KeyboardParams) -> i32 {
 }
 
 /// スコアの内訳を表示
-pub fn score_breakdown(layout: &Layout, corpus: &Corpus, w: &Weights) {
+pub fn score_breakdown(layout: &Layout, corpus: &Corpus, w: &Weights, out: &mut impl Write) {
     let nc = w.kp.num_chars;
     let mut stroke_cost = 0.0;
     let mut uni_cost = 0.0;
@@ -331,10 +333,10 @@ pub fn score_breakdown(layout: &Layout, corpus: &Corpus, w: &Weights) {
     }
 
     let total = stroke_cost + uni_cost + bi_cost + tri_cost;
-    println!("  打鍵数コスト  : {:.4}  （平均打鍵数 {:.4}, 1打鍵カバー率 {:.1}%）",
+    let _ = writeln!(out, "  打鍵数コスト  : {:.4}  （平均打鍵数 {:.4}, 1打鍵カバー率 {:.1}%）",
         stroke_cost, total_strokes, l1_coverage * 100.0);
-    println!("  難易度コスト  : {:.4}", uni_cost);
-    println!("  バイグラムコスト: {:.4}", bi_cost);
-    println!("  準交互ボーナス: {:.4}", tri_cost);
-    println!("  合計スコア    : {:.4}", total);
+    let _ = writeln!(out, "  難易度コスト  : {:.4}", uni_cost);
+    let _ = writeln!(out, "  バイグラムコスト: {:.4}", bi_cost);
+    let _ = writeln!(out, "  準交互ボーナス: {:.4}", tri_cost);
+    let _ = writeln!(out, "  合計スコア    : {:.4}", total);
 }

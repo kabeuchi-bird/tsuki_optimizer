@@ -1,5 +1,6 @@
 // search.rs — タブーサーチ本体
 
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use rand::prelude::*;
@@ -116,6 +117,7 @@ pub fn run(
     rng: &mut impl Rng,
     stop_flag: &Arc<AtomicBool>,
     report_flag: &Arc<AtomicBool>,
+    out: &mut impl Write,
 ) -> Layout {
     let mut current = initial_layout.clone();
     let mut current_score = score(&current, corpus, weights);
@@ -247,7 +249,7 @@ pub fn run(
         }
 
         if iter % config.log_interval == 0 {
-            eprintln!(
+            let _ = writeln!(out,
                 "iter {:>6} | current {:.4} | best {:.4} | no_improve {:>5} | tenure l1={} l2={} inter={}{}",
                 iter, current_score, best_score, no_improve,
                 cur_tabu_l1, cur_tabu_l2, cur_tabu_inter,
@@ -257,7 +259,7 @@ pub fn run(
 
         if no_improve >= config.restart_after {
             if restarts >= config.max_restarts {
-                eprintln!("最大再起動回数到達。探索終了。");
+                let _ = writeln!(out, "最大再起動回数到達。探索終了。");
                 break;
             }
             restarts  += 1;
@@ -274,20 +276,20 @@ pub fn run(
             tabu_l2    = TabuList::new(cur_tabu_l2);
             tabu_inter = TabuList::new(cur_tabu_inter);
 
-            eprintln!("  → 再起動 #{}: 摂動後スコア={:.4}", restarts, current_score);
+            let _ = writeln!(out, "  → 再起動 #{}: 摂動後スコア={:.4}", restarts, current_score);
         }
 
         if report_flag.swap(false, Ordering::Relaxed) {
-            eprintln!("\n[SIGUSR1] 現在のベスト配列 (スコア={:.4}, iter {})", best_score, iter);
-            best.display();
+            let _ = writeln!(out, "\n[SIGUSR1] 現在のベスト配列 (スコア={:.4}, iter {})", best_score, iter);
+            best.display(out);
         }
         if stop_flag.load(Ordering::Relaxed) {
-            eprintln!("\n[SIGINT] 割り込みシグナルを受信。探索を中断します。");
+            let _ = writeln!(out, "\n[SIGINT] 割り込みシグナルを受信。探索を中断します。");
             break;
         }
     }
 
-    eprintln!(
+    let _ = writeln!(out,
         "探索完了: {} iter, {} restarts | 最良スコア={:.4}",
         iter, restarts, best_score
     );
@@ -442,7 +444,7 @@ pub fn random_perturbation(
 /// ——————————————————————————————
 /// 初期解生成：頻度上位の文字をLayer 1へ配置
 /// ——————————————————————————————
-pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams) -> Layout {
+pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams, out: &mut impl Write) -> Layout {
     let mut layout = Layout::initial(kp);
 
     // L1に確定固定される文字：
@@ -507,7 +509,7 @@ pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams) -> Layout {
         layout.swap_chars(demote, promote);
     }
 
-    eprintln!("初期解生成完了。L1に配置: {:?}", {
+    let _ = writeln!(out, "初期解生成完了。L1に配置: {:?}", {
         use crate::chars::CHAR_LIST;
         (0..kp.num_chars as CharId)
             .filter(|&c| layout.is_l1(c) && !is_void(c))

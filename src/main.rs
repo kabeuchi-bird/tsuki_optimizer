@@ -20,6 +20,7 @@
 //   --log-interval  <n>     ログ間隔                 (toml: run.log_interval)
 //   --keyboard-size <s>     キーボードサイズ         (toml: run.keyboard_size)
 //                           "3x10"（デフォルト）または "3x11"
+//   --log           <path>  ログファイルパス         (省略時: log/YYMMDD_HHMMSS.log)
 
 mod chars;
 mod config;
@@ -28,6 +29,8 @@ mod cost;
 mod layout;
 mod search;
 
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -39,6 +42,39 @@ use signal_hook::flag;
 use config::{Config, keyboard_size_str};
 use corpus::Corpus;
 use cost::{score, score_breakdown};
+
+// ──────────────────────────────────────────────────────────────
+// TeeWriter: stderr とログファイルの両方に書き込む
+// ──────────────────────────────────────────────────────────────
+struct TeeWriter {
+    file: Option<BufWriter<File>>,
+}
+
+impl TeeWriter {
+    fn new(file: Option<File>) -> Self {
+        TeeWriter {
+            file: file.map(BufWriter::new),
+        }
+    }
+}
+
+impl Write for TeeWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let _ = io::stderr().write_all(buf);
+        if let Some(ref mut f) = self.file {
+            let _ = f.write_all(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let _ = io::stderr().flush();
+        if let Some(ref mut f) = self.file {
+            let _ = f.flush();
+        }
+        Ok(())
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -105,44 +141,64 @@ fn main() {
         Corpus::from_str(SAMPLE_CORPUS)
     };
 
+    // ── ログファイル作成 + TeeWriter ─────────────
+    let log_path = cli.get("--log")
+        .cloned()
+        .unwrap_or_else(|| {
+            let ts = utc_timestamp();
+            format!("log/{}.log", ts)
+        });
+
+    let log_file = {
+        if let Some(parent) = Path::new(&log_path).parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        match File::create(&log_path) {
+            Ok(f)  => { eprintln!("ログファイル: {}", log_path); Some(f) }
+            Err(e) => { eprintln!("ログファイル作成失敗: {} ({})", log_path, e); None }
+        }
+    };
+
+    let mut out = TeeWriter::new(log_file);
+
     // ── 設定サマリ表示 ───────────────────────────
-    eprintln!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    eprintln!(" tsuki_optimize 実行設定");
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    eprintln!(" keyboard_size = {}", keyboard_size_str(&kp));
-    eprintln!(" corpus        = {}", corpus_path);
-    eprintln!(" seed          = {}", seed);
-    eprintln!(" max_iter      = {}", search_config.max_iter);
-    eprintln!(" restart_after = {}", search_config.restart_after);
-    eprintln!(" max_restarts  = {}", search_config.max_restarts);
-    eprintln!(" tabu           l1={} l2={} inter={}", search_config.tabu_l1, search_config.tabu_l2, search_config.tabu_inter);
-    eprintln!(" inter_sample  = {}", search_config.inter_sample);
-    eprintln!(" perturbation  = {} swaps/restart", search_config.perturbation_swaps);
-    eprintln!(" tenure         grow_threshold={:.2}  grow_interval={}  max_scale={:.1}",
+    let _ = writeln!(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let _ = writeln!(out, " tsuki_optimize 実行設定");
+    let _ = writeln!(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let _ = writeln!(out, " keyboard_size = {}", keyboard_size_str(&kp));
+    let _ = writeln!(out, " corpus        = {}", corpus_path);
+    let _ = writeln!(out, " seed          = {}", seed);
+    let _ = writeln!(out, " max_iter      = {}", search_config.max_iter);
+    let _ = writeln!(out, " restart_after = {}", search_config.restart_after);
+    let _ = writeln!(out, " max_restarts  = {}", search_config.max_restarts);
+    let _ = writeln!(out, " tabu           l1={} l2={} inter={}", search_config.tabu_l1, search_config.tabu_l2, search_config.tabu_inter);
+    let _ = writeln!(out, " inter_sample  = {}", search_config.inter_sample);
+    let _ = writeln!(out, " perturbation  = {} swaps/restart", search_config.perturbation_swaps);
+    let _ = writeln!(out, " tenure         grow_threshold={:.2}  grow_interval={}  max_scale={:.1}",
         search_config.tenure_grow_threshold,
         search_config.tenure_grow_interval,
         search_config.tenure_max_scale);
-    eprintln!(" stroke_scale  = {:.1}", weights.stroke_scale);
-    eprintln!(" penalties      same_key={:.1}  same_finger={:.1}  upper_lower={:.1}  same_hand={:.2}",
+    let _ = writeln!(out, " stroke_scale  = {:.1}", weights.stroke_scale);
+    let _ = writeln!(out, " penalties      same_key={:.1}  same_finger={:.1}  upper_lower={:.1}  same_hand={:.2}",
         weights.same_key_penalty, weights.same_finger_penalty,
         weights.upper_lower_jump, weights.same_hand_base);
-    eprintln!(" bonuses        alt={:.2}  outroll={:.2}  inroll={:.2}  quasi_alt={:.2}",
+    let _ = writeln!(out, " bonuses        alt={:.2}  outroll={:.2}  inroll={:.2}  quasi_alt={:.2}",
         weights.alternation_bonus, weights.outroll_bonus,
         weights.inroll_bonus, weights.quasi_alt_bonus);
-    eprintln!(" slot_difficulty:");
+    let _ = writeln!(out, " slot_difficulty:");
     let nc = kp.num_cols as usize;
     for (r, row) in weights.slot_difficulty.iter().enumerate() {
         let label = ["  上段(row0)", "  中段(row1)", "  下段(row2)"][r];
-        eprintln!("{} {:?}", label, &row[..nc]);
+        let _ = writeln!(out, "{} {:?}", label, &row[..nc]);
     }
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    let _ = writeln!(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // ── 初期解生成 ───────────────────────────────
-    let initial_layout = search::build_initial_layout(&corpus, kp);
-    eprintln!("【初期解】");
-    initial_layout.display();
+    let initial_layout = search::build_initial_layout(&corpus, kp, &mut out);
+    let _ = writeln!(out, "【初期解】");
+    initial_layout.display(&mut out);
     let initial_score = score(&initial_layout, &corpus, &weights);
-    score_breakdown(&initial_layout, &corpus, &weights);
+    score_breakdown(&initial_layout, &corpus, &weights, &mut out);
 
     // ── シグナルハンドラ登録 ─────────────────────
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -154,19 +210,20 @@ fn main() {
 
     // ── タブーサーチ ─────────────────────────────
     let mut rng = SmallRng::seed_from_u64(seed);
-    let best_layout = search::run(initial_layout, &corpus, &weights, &search_config, &mut rng, &stop_flag, &report_flag);
+    let best_layout = search::run(initial_layout, &corpus, &weights, &search_config, &mut rng, &stop_flag, &report_flag, &mut out);
 
     // ── 結果表示 ─────────────────────────────────
-    println!("\n【最適化結果】");
-    best_layout.display();
-    score_breakdown(&best_layout, &corpus, &weights);
+    let _ = writeln!(out, "\n【最適化結果】");
+    best_layout.display(&mut out);
+    score_breakdown(&best_layout, &corpus, &weights, &mut out);
 
     let score_best = score(&best_layout, &corpus, &weights);
-    println!("\n初期スコア : {:.4}", initial_score);
-    println!("最良スコア : {:.4}", score_best);
-    println!("改善幅     : {:.4}  ({:.2}%)",
+    let _ = writeln!(out, "\n初期スコア : {:.4}", initial_score);
+    let _ = writeln!(out, "最良スコア : {:.4}", score_best);
+    let _ = writeln!(out, "改善幅     : {:.4}  ({:.2}%)",
         initial_score - score_best,
         (initial_score - score_best) / initial_score.abs() * 100.0);
+    let _ = out.flush();
 }
 
 fn parse_cli(args: &[String]) -> std::collections::HashMap<String, String> {
@@ -181,6 +238,27 @@ fn parse_cli(args: &[String]) -> std::collections::HashMap<String, String> {
         }
     }
     map
+}
+
+/// UTC タイムスタンプ文字列（YYMMDD_HHMMSS）を生成する
+fn utc_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // Howard Hinnant's civil_from_days algorithm
+    let days = (secs / 86400) as i64;
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1461 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let tod = secs % 86400;
+    format!("{:02}{:02}{:02}_{:02}{:02}{:02}",
+        y % 100, m, d, tod / 3600, (tod % 3600) / 60, tod % 60)
 }
 
 const SAMPLE_CORPUS: &str = "\

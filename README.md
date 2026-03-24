@@ -10,12 +10,12 @@
 
 ### 配列の構造
 
-| レイヤー | 説明 |
-|---------|------|
-| Layer 1 | 30スロット。Dキー（col2）に「、」、Kキー（col7）に「。」固定。゛゜はL1内のみ移動可 |
-| Layer 2 | 30スロット。D/Kシフト後にアクセス（前置シフト方式） |
+| レイヤー | 3x10（デフォルト） | 3x11 |
+|---------|------------------|------|
+| Layer 1 | 30スロット。Dキー（col2）に「、」、Kキー（col7）に「。」固定。゛゜はL1内のみ移動可 | 33スロット。☆（col2）・★（col7）が専用シフトキー、固定文字なし。゛゜はL1内のみ移動可 |
+| Layer 2 | 30スロット。D/Kシフト後にアクセス（前置シフト方式） | 33スロット。☆/★シフト後にアクセス（前置シフト方式） |
 
-シフトの方向：左手域のキーは右手K、右手域のキーは左手Dでシフトします。
+シフトの方向：左手域のキーは右手側シフトキー（K/★）、右手域のキーは左手側シフトキー（D/☆）で入力します。
 
 ## ビルド
 
@@ -31,19 +31,41 @@ cargo build --release
 # 設定ファイル + コーパスファイルを用意して実行
 ./run.sh
 
-# ログを残しながら実行（run.shの中身）
-./target/release/tsuki_optimize 2>&1 | tee log/$(date '+%y%m%d_%H%M%S').log
+# 直接実行（ログは log/ に自動出力される）
+./target/release/tsuki_optimize
 
 # CLIオプションで設定を上書き
 ./target/release/tsuki_optimize --iter 100000 --seed 42
+
+# 3x11キーボードで最適化
+./target/release/tsuki_optimize --keyboard-size 3x11
+
+# ログファイルのパスを指定
+./target/release/tsuki_optimize --log result.log
 ```
+
+### CLIオプション一覧
+
+| オプション | 値 | デフォルト | TOML | 説明 |
+|-----------|-----|----------|------|------|
+| `--config` | `<path>` | `tsuki_optimize.toml` | — | 設定ファイルのパス |
+| `--corpus` | `<path>` | `corpus.txt` | `run.corpus` | コーパスファイルのパス |
+| `--seed` | `<整数>` | OS乱数 | `run.seed` | 乱数シード |
+| `--iter` | `<整数>` | 50000 | `run.max_iter` | 最大イテレーション数 |
+| `--restart` | `<整数>` | 3000 | `run.restart_after` | 再起動閾値 |
+| `--max-restarts` | `<整数>` | 10 | `run.max_restarts` | 最大再起動回数 |
+| `--inter-sample` | `<整数>` | 80 | `run.inter_sample` | 層間サンプリング数 |
+| `--stroke-scale` | `<実数>` | 10.0 | `weights.stroke_scale` | 打鍵数スケール係数 |
+| `--log-interval` | `<整数>` | 1000 | `run.log_interval` | ログ出力間隔 |
+| `--keyboard-size` | `3x10` / `3x11` | `3x10` | `run.keyboard_size` | キーボードサイズ |
+| `--log` | `<path>` | `log/YYMMDD_HHMMSS.log` | — | ログファイルのパス |
 
 ### 実行中の操作
 
 | 操作 | 効果 |
 |------|------|
 | `Ctrl+C` | 探索を中断してベスト配列を出力・終了 |
-| `kill -USR1 $(pgrep tsuki_optimize)` | ベストスコアをログに出力して探索は継続 |
+| `kill -USR1 $(pgrep tsuki_optimize)` | 現在のベスト配列をログに出力して探索は継続 |
 
 ## 設定ファイル
 
