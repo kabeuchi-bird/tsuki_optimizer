@@ -278,7 +278,8 @@ pub fn run(
         }
 
         if report_flag.swap(false, Ordering::Relaxed) {
-            eprintln!("\n[SIGUSR1] 現在のベストスコア={:.4} (iter {})", best_score, iter);
+            eprintln!("\n[SIGUSR1] 現在のベスト配列 (スコア={:.4}, iter {})", best_score, iter);
+            best.display();
         }
         if stop_flag.load(Ordering::Relaxed) {
             eprintln!("\n[SIGINT] 割り込みシグナルを受信。探索を中断します。");
