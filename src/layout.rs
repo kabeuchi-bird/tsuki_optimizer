@@ -1,5 +1,7 @@
 // layout.rs — 月配列改変版のレイアウト定義
 
+use std::io::Write;
+
 use crate::chars::{
     CharId, MAX_CHARS, TOUTEN_ID, KUTEN_ID, DAKUTEN_ID, HANDAKUTEN_ID,
 };
@@ -242,14 +244,14 @@ impl Layout {
     }
 
     /// 現在のレイアウトを表示する
-    pub fn display(&self) {
+    pub fn display(&self, out: &mut impl Write) {
         use crate::chars::CHAR_LIST;
         let nc = self.kp.num_cols as usize;
         let npl = self.kp.num_slots_per_layer as usize;
 
-        println!("【Layer 1】");
+        let _ = writeln!(out, "【Layer 1】");
         for row in 0u8..3 {
-            print!("  ");
+            let _ = write!(out, "  ");
             for col in 0..nc {
                 let slot = (row as usize) * nc + col;
                 // シフトキースロットは ☆/★ を表示
@@ -258,23 +260,23 @@ impl Layout {
                         || slot == self.kp.shift_right as usize)
                 {
                     let sym = if slot == self.kp.shift_left as usize { '☆' } else { '★' };
-                    print!("{} ", sym);
+                    let _ = write!(out, "{} ", sym);
                 } else {
                     let c = self.slot_to_char[slot];
-                    print!("{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
+                    let _ = write!(out, "{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
                 }
             }
-            println!();
+            let _ = writeln!(out);
         }
-        println!("【Layer 2】");
+        let _ = writeln!(out, "【Layer 2】");
         for row in 0u8..3 {
-            print!("  ");
+            let _ = write!(out, "  ");
             for col in 0..nc {
                 let slot = npl + (row as usize) * nc + col;
                 let c = self.slot_to_char[slot];
-                print!("{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
+                let _ = write!(out, "{} ", if c == SHIFT_SLOT_SENTINEL { '?' } else { CHAR_LIST[c as usize] });
             }
-            println!();
+            let _ = writeln!(out);
         }
     }
 }

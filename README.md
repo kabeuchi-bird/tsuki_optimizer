@@ -31,14 +31,17 @@ cargo build --release
 # 設定ファイル + コーパスファイルを用意して実行
 ./run.sh
 
-# ログを残しながら実行（run.shの中身）
-./target/release/tsuki_optimize 2>&1 | tee log/$(date '+%y%m%d_%H%M%S').log
+# 直接実行（ログは log/ に自動出力される）
+./target/release/tsuki_optimize
 
 # CLIオプションで設定を上書き
 ./target/release/tsuki_optimize --iter 100000 --seed 42
 
 # 3x11キーボードで最適化
 ./target/release/tsuki_optimize --keyboard-size 3x11
+
+# ログファイルのパスを指定
+./target/release/tsuki_optimize --log result.log
 ```
 
 ### CLIオプション一覧
@@ -55,6 +58,7 @@ cargo build --release
 | `--stroke-scale` | `<実数>` | 10.0 | `weights.stroke_scale` | 打鍵数スケール係数 |
 | `--log-interval` | `<整数>` | 1000 | `run.log_interval` | ログ出力間隔 |
 | `--keyboard-size` | `3x10` / `3x11` | `3x10` | `run.keyboard_size` | キーボードサイズ |
+| `--log` | `<path>` | `log/YYMMDD_HHMMSS.log` | — | ログファイルのパス |
 
 ### 実行中の操作
 
