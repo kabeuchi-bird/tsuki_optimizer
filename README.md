@@ -28,10 +28,7 @@ cargo build --release
 ## 使い方
 
 ```bash
-# 設定ファイル + コーパスファイルを用意して実行
-./run.sh
-
-# 直接実行（ログは log/ に自動出力される）
+# ビルド後、直接起動（ログは log/ に自動出力される）
 ./target/release/tsuki_optimize
 
 # CLIオプションで設定を上書き
@@ -93,7 +90,6 @@ cargo build --release
 tsuki_optimize/
 ├── Cargo.toml
 ├── tsuki_optimize.toml   # 設定ファイル
-├── run.sh                # ログ付き実行スクリプト
 └── src/
     ├── main.rs           # エントリポイント・CLIパース・シグナルハンドラ
     ├── chars.rs          # 文字定義・有声音デコンポーズ
