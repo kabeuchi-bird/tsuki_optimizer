@@ -8,7 +8,10 @@ use rand::prelude::*;
 use crate::chars::{CharId, DAKUTEN_ID, HANDAKUTEN_ID, VOID_CHAR_FIRST};
 use crate::corpus::Corpus;
 use crate::cost::{delta_score, score, Weights};
-use crate::layout::{KeyboardParams, Layout, is_fixed, is_inter_layer_movable};
+use crate::layout::{
+    ExclusivePair, KeyboardParams, Layout, SHIFT_SLOT_SENTINEL,
+    is_fixed, is_inter_layer_movable, swap_would_violate,
+};
 
 /// ——————————————————————————————
 /// タブーリスト（circular buffer）
@@ -30,7 +33,7 @@ impl TabuList {
 
     fn contains(&self, c1: CharId, c2: CharId) -> bool {
         let key = normalize_pair(c1, c2);
-        self.entries.iter().any(|&e| e == key)
+        self.entries.contains(&key)
     }
 
     fn add(&mut self, c1: CharId, c2: CharId) {
@@ -47,6 +50,15 @@ impl TabuList {
 #[inline]
 fn normalize_pair(a: CharId, b: CharId) -> (CharId, CharId) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// ——————————————————————————————
+/// 探索コンテキスト（静的な入力データをまとめる）
+/// ——————————————————————————————
+pub struct SearchContext<'a> {
+    pub corpus: &'a Corpus,
+    pub weights: &'a Weights,
+    pub pairs: &'a [ExclusivePair],
 }
 
 /// ——————————————————————————————
@@ -111,8 +123,7 @@ impl Default for SearchConfig {
 /// ——————————————————————————————
 pub fn run(
     initial_layout: Layout,
-    corpus: &Corpus,
-    weights: &Weights,
+    ctx: &SearchContext,
     config: &SearchConfig,
     rng: &mut impl Rng,
     stop_flag: &Arc<AtomicBool>,
@@ -120,7 +131,7 @@ pub fn run(
     out: &mut impl Write,
 ) -> Layout {
     let mut current = initial_layout.clone();
-    let mut current_score = score(&current, corpus, weights);
+    let mut current_score = score(&current, ctx.corpus, ctx.weights);
 
     let mut best = current.clone();
     let mut best_score = current_score;
@@ -165,7 +176,7 @@ pub fn run(
 
         let l1_free = collect_l1_free_chars(&current);
         generate_swap_candidates(
-            &current, corpus, weights,
+            &current, ctx,
             &l1_free, OpKind::SwapL1,
             config.ab_sample_limit, rng,
             &mut candidates,
@@ -173,14 +184,14 @@ pub fn run(
 
         let l2_free = collect_l2_chars(&current);
         generate_swap_candidates(
-            &current, corpus, weights,
+            &current, ctx,
             &l2_free, OpKind::SwapL2,
             config.ab_sample_limit, rng,
             &mut candidates,
         );
 
         generate_inter_layer_candidates(
-            &current, corpus, weights,
+            &current, ctx,
             config.inter_sample, rng,
             &mut candidates,
         );
@@ -228,7 +239,7 @@ pub fn run(
         } else {
             no_improve += 1;
             if no_improve > tenure_grow_start
-                && (no_improve - tenure_grow_start) % config.tenure_grow_interval == 0
+                && (no_improve - tenure_grow_start).is_multiple_of(config.tenure_grow_interval)
             {
                 let max_l1    = (config.tabu_l1    as f64 * config.tenure_max_scale) as usize;
                 let max_l2    = (config.tabu_l2    as f64 * config.tenure_max_scale) as usize;
@@ -248,7 +259,7 @@ pub fn run(
             }
         }
 
-        if iter % config.log_interval == 0 {
+        if iter.is_multiple_of(config.log_interval) {
             let _ = writeln!(out,
                 "iter {:>6} | current {:.4} | best {:.4} | no_improve {:>5} | tenure l1={} l2={} inter={}{}",
                 iter, current_score, best_score, no_improve,
@@ -266,8 +277,8 @@ pub fn run(
             no_improve = 0;
 
             current = best.clone();
-            random_perturbation(&mut current, corpus, config.perturbation_swaps, rng);
-            current_score = score(&current, corpus, weights);
+            random_perturbation(&mut current, config.perturbation_swaps, rng, ctx.pairs);
+            current_score = score(&current, ctx.corpus, ctx.weights);
 
             cur_tabu_l1    = config.tabu_l1;
             cur_tabu_l2    = config.tabu_l2;
@@ -325,8 +336,7 @@ fn is_void(c: CharId) -> bool {
 /// 操作A/B: 同レイヤー内スワップの候補を生成
 fn generate_swap_candidates(
     layout: &Layout,
-    corpus: &Corpus,
-    weights: &Weights,
+    ctx: &SearchContext,
     chars: &[CharId],
     kind: OpKind,
     sample_limit: usize,
@@ -341,7 +351,8 @@ fn generate_swap_candidates(
         for i in 0..n {
             for j in i + 1..n {
                 let (c1, c2) = (chars[i], chars[j]);
-                let delta = delta_score(layout, corpus, weights, c1, c2);
+                if swap_would_violate(layout, c1, c2, ctx.pairs) { continue; }
+                let delta = delta_score(layout, ctx.corpus, ctx.weights, c1, c2);
                 out.push(Candidate { kind, c1, c2, delta });
             }
         }
@@ -354,7 +365,8 @@ fn generate_swap_candidates(
             let j = rng.gen_range(0..n);
             if i == j { continue; }
             let (c1, c2) = (chars[i], chars[j]);
-            let delta = delta_score(layout, corpus, weights, c1, c2);
+            if swap_would_violate(layout, c1, c2, ctx.pairs) { continue; }
+            let delta = delta_score(layout, ctx.corpus, ctx.weights, c1, c2);
             out.push(Candidate { kind, c1, c2, delta });
             sampled += 1;
         }
@@ -364,8 +376,7 @@ fn generate_swap_candidates(
 /// 操作C: 層間スワップ候補を頻度差ベースサンプリングで生成
 fn generate_inter_layer_candidates(
     layout: &Layout,
-    corpus: &Corpus,
-    weights: &Weights,
+    ctx: &SearchContext,
     n_samples: usize,
     rng: &mut impl Rng,
     out: &mut Vec<Candidate>,
@@ -374,13 +385,13 @@ fn generate_inter_layer_candidates(
 
     let mut l1_chars: Vec<(CharId, f64)> = (0..kp.num_chars as CharId)
         .filter(|&c| layout.is_l1(c) && is_inter_layer_movable(c, kp) && !is_void(c))
-        .map(|c| (c, corpus.unigrams[c as usize]))
+        .map(|c| (c, ctx.corpus.unigrams[c as usize]))
         .collect();
     l1_chars.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut l2_chars: Vec<(CharId, f64)> = (0..kp.num_chars as CharId)
         .filter(|&c| !layout.is_l1(c) && !is_void(c))
-        .map(|c| (c, corpus.unigrams[c as usize]))
+        .map(|c| (c, ctx.corpus.unigrams[c as usize]))
         .collect();
     l2_chars.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
 
@@ -397,7 +408,8 @@ fn generate_inter_layer_candidates(
         tries += 1;
         let c1 = weighted_choice(&l1_chars, &l1_weights, l1_w_sum, rng).0;
         let c2 = weighted_choice(&l2_chars, &l2_weights, l2_w_sum, rng).0;
-        let delta = delta_score(layout, corpus, weights, c1, c2);
+        if swap_would_violate(layout, c1, c2, ctx.pairs) { continue; }
+        let delta = delta_score(layout, ctx.corpus, ctx.weights, c1, c2);
         out.push(Candidate { kind: OpKind::InterLayer, c1, c2, delta });
         sampled += 1;
     }
@@ -418,11 +430,11 @@ fn weighted_choice<T: Copy>(
 }
 
 /// ランダム摂動（再起動時）
-pub fn random_perturbation(
+fn random_perturbation(
     layout: &mut Layout,
-    _corpus: &Corpus,
     n_swaps: usize,
     rng: &mut impl Rng,
+    pairs: &[ExclusivePair],
 ) {
     let kp = layout.kp;
     let l1_chars: Vec<CharId> = (0..kp.num_chars as CharId)
@@ -437,6 +449,7 @@ pub fn random_perturbation(
     for _ in 0..n_swaps {
         let c1 = *l1_chars.choose(rng).unwrap();
         let c2 = *l2_chars.choose(rng).unwrap();
+        if swap_would_violate(layout, c1, c2, pairs) { continue; }
         layout.swap_chars(c1, c2);
     }
 }
@@ -444,7 +457,7 @@ pub fn random_perturbation(
 /// ——————————————————————————————
 /// 初期解生成：頻度上位の文字をLayer 1へ配置
 /// ——————————————————————————————
-pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams, out: &mut impl Write) -> Layout {
+pub fn build_initial_layout(ctx: &SearchContext, kp: KeyboardParams, out: &mut impl Write) -> Layout {
     let mut layout = Layout::initial(kp);
 
     // L1に確定固定される文字：
@@ -475,7 +488,7 @@ pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams, out: &mut impl 
                 && !is_l1_only_char(c)
                 && !is_void(c)
         })
-        .map(|c| (c, corpus.unigrams[c as usize]))
+        .map(|c| (c, ctx.corpus.unigrams[c as usize]))
         .collect();
     movable.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
 
@@ -507,6 +520,42 @@ pub fn build_initial_layout(corpus: &Corpus, kp: KeyboardParams, out: &mut impl 
     // ペアで層間スワップ
     while let (Some(demote), Some(promote)) = (to_demote.pop_front(), to_promote.pop_front()) {
         layout.swap_chars(demote, promote);
+    }
+
+    // 排他ペア制約の初期違反を greedy 修正（L2 同士をスワップして解消）
+    if !ctx.pairs.is_empty() {
+        let npl = kp.num_slots_per_layer as usize;
+        for _pass in 0..20 {
+            let mut any_violation = false;
+            for l1_slot in 0..npl {
+                let l2_slot = l1_slot + npl;
+                let l1_c = layout.slot_to_char[l1_slot];
+                let l2_c = layout.slot_to_char[l2_slot];
+                // SHIFT_SLOT_SENTINEL(255) と void(>=62) を除外
+                if l1_c >= VOID_CHAR_FIRST || l2_c >= VOID_CHAR_FIRST { continue; }
+                if !ctx.pairs.iter().any(|p| p.violates(l1_c, l2_c)) { continue; }
+
+                any_violation = true;
+                let mut fixed = false;
+                'fix: for alt_l1_slot in 0..npl {
+                    let alt_l2_slot = alt_l1_slot + npl;
+                    let alt_l2_c = layout.slot_to_char[alt_l2_slot];
+                    if alt_l2_c >= VOID_CHAR_FIRST || alt_l2_c == l2_c { continue; }
+                    // スワップ後: l1_slot側は (l1_c, alt_l2_c)、alt_l1_slot側は (alt_l1_c, l2_c)
+                    if ctx.pairs.iter().any(|p| p.violates(l1_c, alt_l2_c)) { continue; }
+                    let alt_l1_c = layout.slot_to_char[alt_l1_slot];
+                    if alt_l1_c != SHIFT_SLOT_SENTINEL && alt_l1_c < VOID_CHAR_FIRST
+                        && ctx.pairs.iter().any(|p| p.violates(alt_l1_c, l2_c)) { continue; }
+                    layout.swap_chars(l2_c, alt_l2_c);
+                    fixed = true;
+                    break 'fix;
+                }
+                if !fixed {
+                    let _ = writeln!(out, "警告: 排他ペア制約の初期違反を修正できませんでした (L1スロット{})", l1_slot);
+                }
+            }
+            if !any_violation { break; }
+        }
     }
 
     let _ = writeln!(out, "初期解生成完了。L1に配置: {:?}", {
